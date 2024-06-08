@@ -27,9 +27,14 @@ static g_Resource[][] = {
 	"sprites/zl/npc/scorpion/zl_focus.spr",
 	"sprites/zl/npc/scorpion/zl_healing.spr",	
 	"models/zl/npc/scorpion/zl_tentacle_sign.mdl",		// 9
-	"models/zl/npc/scorpion/zl_tentacle2.mdl"		// 10
-	
-	
+	"models/zl/npc/scorpion/zl_tentacle2.mdl",		// 10
+	"sprites/zl/npc/scorpion/zl_arrow.spr",
+	"models/zl/npc/scorpion/zl_base_armor.mdl",
+	"models/zl/npc/scorpion/zl_tornado_killed.mdl",
+	"models/zl/npc/scorpion/zl_tornado_bomb.mdl",
+	"models/zl/npc/scorpion/zl_missile.mdl",		// 15
+	"sprites/zl/npc/scorpion/zl_explode_skull.spr",
+	"models/zl/npc/scorpion/zl_gibs.mdl"
 }
 
 new const g_SoundList[][] = {
@@ -54,7 +59,9 @@ new const g_SoundList[][] = {
 	"zl/npc/scorpion/tentacle2.wav",
 	"zl/npc/scorpion/tentacle3.wav",	
 	"zl/npc/scorpion/sandstorm.wav",		// 20
-	"zl/npc/scorpion/windstorm.wav"
+	"zl/npc/scorpion/windstorm.wav",
+	"weapons/mortarhit.wav",
+	"weapons/nuke_fly.wav"
 }
 
 enum {
@@ -66,15 +73,17 @@ enum {
 	DOWN0,
 	DOWN1,
 	TENTACLE2,
-	REGENERATION
+	REGENERATION,
+	X_TORNADO,
+	X_STORM
 }
 
-static g_Scorpion, g_Ability, g_Tentacle[NUM_TENTACLE]
+static g_Scorpion, g_Ability, g_Tentacle[NUM_TENTACLE], g_p_d_tornado[33]
 static i_Resource[sizeof g_Resource], g_MaxPlayer
 static e_storm_start[STORM + 1], e_storm_end[STORM + 1]
 static e_down[3] // 0 - First, 1 - Phase2, 2 - Two
 static Float:g_Damage, g_Phase = 0, Float:g_LiderDamage[33]
-static zl_cvar[5], Float:zl_fcvar[2]
+static zl_cvar[18], Float:zl_fcvar[3], e_door[2], e_zombie[11] // (11 - backup)
 
 
 public plugin_init() {
@@ -96,7 +105,14 @@ public plugin_init() {
 	register_think("scorpion_hpbar", "think_healthbar")
 	register_think("boss_scorpion", "think_boss")	
 	
+	/* TORNADO X */
+	register_think("base_damage", "think_base_damage")
+	register_think("tornado_killed", "think_tornado_killed")
+	register_think("tornado_bomb", "think_tornado_bomb")
+	
+	register_touch("tornado_bomb", "*", "touch_tbomb")
 	register_touch("boss_scorpion", "player", "touch_boss")
+	register_touch("sz_missile", "*", "touch_missile")
 	
 	RegisterHam(Ham_TakeDamage, "info_target", "Hook_Damage", 0)
 	
@@ -120,10 +136,14 @@ public think_boss( boss ) {
 		if (g_Phase < 5)
 			g_Ability = TENTACLE
 		else {
-			switch(random(3)) {
+			switch(random(4)) {
 				case 0: g_Ability = TENTACLE
 				case 1: g_Ability = TENTACLE2
 				case 2: g_Ability = DOWN0
+				case 3: {
+					g_Ability = X_STORM
+					zl_colorchat(0, "!n[!gScorpion!n] !nБосс переходит в фазу !gШТОРМА!n, не стойте на месте!")
+				}
 			}
 		}
 	}
@@ -462,6 +482,21 @@ public think_boss( boss ) {
 					set_pev(boss, pev_velocity, velocity)
 					
 					if(len < 70) {
+						
+						static e
+						while ((e = engfunc(EngFunc_FindEntityByString, e, "classname", "scorpion_killed"))) {
+							if(pev_valid(e)) {
+								engfunc(EngFunc_RemoveEntity, e)
+							}
+						}
+						
+						static f
+						while ((f = engfunc(EngFunc_FindEntityByString, f, "classname", "scorpion_bomb"))) {
+							if(pev_valid(e)) {
+								engfunc(EngFunc_RemoveEntity, f)
+							}
+						}
+						
 						pev(boss, pev_origin, origin)
 						new hole = create_entity("info_target")
 						origin[2] -= 30.0
@@ -687,9 +722,10 @@ public think_boss( boss ) {
 					
 					new name[32]
 					get_user_name(victim, name, charsmax(name))
-					zl_colorchat(0, "!n[!gScorpion!n] Aggressor focused in !g%s", name)
-					zl_colorchat(victim, "!n[!gScorpion!n] !gYou !nfocused, please in laser")
-					
+					zl_colorchat(0, "!n[!gScorpion!n] Босс сфокусировал взгляд на !g%s", name)
+					zl_colorchat(victim, "!n[!gScorpion!n] !gВы !nочень разозили босса!")
+					zl_colorchat(victim, "!n[!gScorpion!n] !nпожайлуйста встаньте !gперед лицом босса !nи покажите кто тут главный :)")					
+
 					num++
 				}
 				case 1: {
@@ -699,6 +735,7 @@ public think_boss( boss ) {
 					set_pev(boss, pev_angles, angle)
 					set_pev(boss, pev_nextthink, get_gametime() + 4.0)
 					zl_anim(boss, 13, 1.0)
+					zl_colorchat(0, "!n[!gScorpion!n] !nБосс перешел в фазу защиты! Прекратите атаку!")
 					num++
 				}
 				case 2: {
@@ -786,7 +823,7 @@ public think_boss( boss ) {
 					if(num == 22) {
 						new Float:procent
 						procent = (g_Damage * 17.0) * 100.0 / hp_max
-						zl_colorchat(0, "!n[!gScorpion!n] Boss healing !g%d%%", floatround(procent))
+						zl_colorchat(0, "!n[!gScorpion!n] Босс был вылечен на !g%d%% !nздоровья", floatround(procent))
 						pre = 0
 					}
 					
@@ -799,6 +836,187 @@ public think_boss( boss ) {
 				}
 			}
 		}
+		case X_TORNADO: {
+			if (pev(boss, pev_sequence) != 2) {
+				set_pev(boss, pev_movetype, MOVETYPE_NONE)
+				zl_anim(boss, 2, 1.0)
+			}
+						
+			new Float:o[3]
+			new t = create_entity("info_target")
+			
+			new victim = zl_player_choose(boss, ZL_CHOOSE_RANDOM)
+			set_pev(t, pev_victim, victim)
+			
+			if(g_Phase == -1) {
+				new Float:end_origin[3]
+				pev(victim, pev_origin, o)
+					
+				/* vector create */
+				o[2] += 300.0
+				end_origin[0] = o[0]
+				end_origin[1] = o[1]
+				end_origin[2] = o[2] - 600.0
+									
+				new tr
+				engfunc(EngFunc_TraceLine, o, end_origin, IGNORE_MONSTERS, -1, tr)
+				get_tr2(tr, TR_vecEndPos, o)
+				o[2] += 1.0
+				/* end vector create */
+			} else {
+				pev(boss, pev_origin, o)
+			}
+			
+			engfunc(EngFunc_SetOrigin, t, o)
+			switch (g_Phase) {
+				case -1: { // Damage ( blue )
+					set_rendering(t, kRenderFxNone, 0, 0, 0, kRenderTransAdd, 255)
+					set_pev(t, pev_classname, "base_damage")
+					engfunc(EngFunc_SetModel, t, g_Resource[12])
+					zl_colorchat(0, "!n[!gScorpion!n] !nЗона на двойной урон была расположена где-то на карте")
+					
+				}
+				case -2: { // Killed ( Red )
+					set_pev(t, pev_classname, "tornado_killed")
+					engfunc(EngFunc_SetModel, t, g_Resource[13])
+					zl_laser(t, victim, {255, 0, 0}, 255, 0)
+					set_rendering(victim, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 80)
+					zl_colorchat(0, "!n[!gScorpion!n] !nБосс выпустил смертоносный торнадо")
+				}
+				case -3: { // Bomb ( Yellow )
+					set_pev(t, pev_classname, "tornado_bomb")
+					engfunc(EngFunc_SetModel, t, g_Resource[14])
+					zl_laser(t, victim, {250, 255, 0}, 255, 0)
+					set_rendering(victim, kRenderFxGlowShell, 255, 255, 0, kRenderNormal, 80)
+					zl_colorchat(0, "!n[!gScorpion!n] !gВирусный !nторнадо, берегитесь!")
+				}
+			}
+			g_Ability = RUN
+			set_pev(t, pev_movetype, MOVETYPE_FLY)
+			set_pev(boss, pev_nextthink, get_gametime() + 0.5)
+			set_pev(t, pev_nextthink, get_gametime() + 1.0)
+			zl_anim(t, 1, 0.5)
+		}
+		case X_STORM: {			
+			static num, raketa_entity[32], a[32]
+			switch (num) {
+				case 0: {
+					if (pev(boss, pev_sequence) != 4) {
+						set_pev(boss, pev_movetype, MOVETYPE_PUSHSTEP)
+						zl_anim(boss, 4, 1.0)
+					}
+					
+					static len, Float:velocity[3], Float:angle[3]
+					len = zl_move(boss, e_down[1], float(zl_cvar[1]), velocity, angle)
+					set_pev(boss, pev_angles, angle)
+					set_pev(boss, pev_velocity, velocity)
+					
+					if(len < 70) {
+						set_pev(boss, pev_nextthink, get_gametime() + 0.5)
+						zl_anim(boss, 2, 3.0)
+						num++
+						return
+					}
+					set_pev(boss, pev_nextthink, get_gametime() + 0.1)
+				}
+				case 1: { // 3aJlP
+					static num_raket
+					set_pev(boss, pev_nextthink, get_gametime() + 0.2)
+					
+					if (num_raket == 0) {
+						num_raket = zl_player_alive()
+					}
+					
+					if (num_raket == 1) {
+						set_pev(boss, pev_nextthink, get_gametime() + 2.0)
+						zl_anim(boss, 10, 3.0)
+						num++
+						
+					}
+					num_raket--
+					new raketa = create_entity("info_target")
+					new Float:boss_origin[3]
+					pev(boss, pev_origin, boss_origin)
+					boss_origin[2] += 150.0
+					engfunc(EngFunc_SetModel, raketa, g_Resource[15])
+					engfunc(EngFunc_SetOrigin, raketa, boss_origin)
+					set_pev(raketa, pev_movetype, MOVETYPE_NOCLIP)
+					set_pev(raketa, pev_classname, "sz_missile")
+										
+					new Float:velocity[3], Float:angle[3]
+					velocity[0] = random_float(1.0, 300.0)
+					velocity[1] = random_float(1.0, 300.0)
+					velocity[2] = 1500.0
+					set_pev(raketa, pev_velocity, velocity)
+					vector_to_angle(velocity, angle)
+					set_pev(raketa, pev_angles, angle)
+					
+					zl_beamfollow(raketa, 1, 2, {255, 255, 255})
+					zl_sound(raketa, g_SoundList[23], 1)
+					raketa_entity[num_raket] = raketa
+				}
+				case 2: {
+					new i, j, b, s
+					for(i = 1; i <= g_MaxPlayer; i++) {
+						if (!is_user_alive(i))
+							continue
+							
+						a[i] = i
+						s++
+					}
+				     
+					for(i = 1; i <= s; i++)
+					{
+						j = random_num(1, s)
+						b = a[i]
+						a[i] = a[j]
+						a[j] = b
+					}
+					set_pev(boss, pev_nextthink, get_gametime() + 0.5)
+					num++
+				}
+				case 3: {
+					static i
+					new Float:o_s[3], Float:o_e[3]
+					
+					if (!is_user_alive(a[i+1])) {
+						set_pev(boss, pev_nextthink, get_gametime() + 1.3)
+						num++
+						i = 0
+						return
+					}
+					
+					pev(a[i+1], pev_origin, o_e)
+					o_s[0] = o_e[0]
+					o_s[1] = o_e[1]
+					o_s[2] = o_e[2] + 1000.0
+					engfunc(EngFunc_SetSize, raketa_entity[i], {-1.0, -1.0, -1.0}, {1.0, 1.0, 1.0})
+					set_pev(raketa_entity[i], pev_origin, o_s)
+					set_pev(raketa_entity[i], pev_velocity, {0.0, 0.0, -500.0})
+					set_pev(raketa_entity[i], pev_solid, SOLID_TRIGGER)
+					set_pev(raketa_entity[i], pev_movetype, MOVETYPE_TOSS)
+					set_pev(boss, pev_nextthink, get_gametime() + 0.2)
+					
+					new Float:angle[3]
+					vector_to_angle(Float:{0.0, 0.0, -10.0}, angle)
+					set_pev(raketa_entity[i], pev_angles, angle)
+					zl_beamfollow(raketa_entity[i], 1, 1, {255, 255, 255})
+					raketa_entity[i] = 0
+					i++
+				}
+				case 4: {
+					new Float:origin[3]
+					pev(e_down[random(3)], pev_origin, origin)
+					engfunc(EngFunc_SetOrigin, boss, origin)
+					set_pev(boss, pev_solid, SOLID_BBOX)
+					set_pev(boss, pev_nextthink, get_gametime() + 6.2)
+					zl_anim(boss, 12, 1.0)
+					g_Ability = RUN
+					num = 0
+				}
+			}
+			
+		}
 	}
 }
 
@@ -808,10 +1026,39 @@ public Hook_Damage(boss, w, player, Float:dmg, dt) {
 	
 	g_LiderDamage[player] += dmg
 	
+	if (g_p_d_tornado[player]) {
+		if (!is_user_alive(player))
+			return HAM_IGNORED
+			
+		SetHamParamFloat(4, dmg * zl_fcvar[2])
+		
+	}
+	
 	if (g_Ability != REGENERATION)
-		return HAM_IGNORED
+		return HAM_HANDLED
 	
 	g_Damage += dmg
+	
+	if (pev(boss, pev_sequence) == 13) {
+		if (is_user_alive(player)) {
+			zl_screenfade(player, 1, 1, {255, 0, 0}, 100, 1)
+			
+			new Float:hp
+			pev(player, pev_health, hp)
+			
+			if (hp <= 5)
+				ExecuteHamB(Ham_Killed, player, player, 2)
+			else {
+				static Float:slap[3]
+				slap[0] = random_float(0.0, 255.0) 
+				slap[1] = random_float(0.0, 255.0)
+				slap[2] = random_float(0.0, 255.0)
+				set_pev(player, pev_velocity, slap)
+				set_pev(player, pev_health, hp - 5.0)
+			}
+		}
+	}
+	
 	return HAM_SUPERCEDE
 }
 
@@ -829,6 +1076,11 @@ public think_regeneration( e ) {
 			}
 			
 			if (entity_range(victim, e) < 40) {
+				message_begin( MSG_BROADCAST, SVC_TEMPENTITY )
+				write_byte( TE_KILLBEAM ) 
+				write_short( g_Scorpion | 0x3000 )
+				message_end()
+				
 				zl_anim(g_Scorpion, 16, 1.0)
 				set_pev(g_Scorpion, pev_nextthink, get_gametime() + 0.1)
 				num = 51
@@ -845,9 +1097,11 @@ public think_regeneration( e ) {
 
 public think_hole( hole ) {
 	#define TORNADO 8
-	#define TORNADO_DEF	15
+	#define TORNADO_DEF	12
 	#define TORNADO_OFFSET	100.0
+	new t
 	static num
+	static Float:origin[3], Float:origin_tornado[TORNADO][3]
 	switch (num) {
 		case 0: {
 			static i, n, Float:velocity[3]
@@ -861,6 +1115,71 @@ public think_hole( hole ) {
 			n++
 			
 			if(n > 30) {
+				/* Remake 1.2 */
+				pev(hole, pev_origin, origin)
+			
+				origin_tornado[0][0] = origin[0] + TORNADO_OFFSET
+				origin_tornado[0][1] = origin[1]
+				
+				origin_tornado[1][0] = origin[0] 
+				origin_tornado[1][1] = origin[1] + TORNADO_OFFSET
+				
+				origin_tornado[2][0] = origin[0] + TORNADO_OFFSET
+				origin_tornado[2][1] = origin[1] - TORNADO_OFFSET
+				
+				origin_tornado[3][0] = origin[0] - TORNADO_OFFSET
+				origin_tornado[3][1] = origin[1] + TORNADO_OFFSET
+				
+				origin_tornado[4][0] = origin[0] + TORNADO_OFFSET
+				origin_tornado[4][1] = origin[1] + TORNADO_OFFSET
+				
+				origin_tornado[5][0] = origin[0] - TORNADO_OFFSET
+				origin_tornado[5][1] = origin[1] - TORNADO_OFFSET
+				
+				origin_tornado[6][0] = origin[0] - TORNADO_OFFSET
+				origin_tornado[6][1] = origin[1]
+				
+				origin_tornado[7][0] = origin[0] 
+				origin_tornado[7][1] = origin[1] - TORNADO_OFFSET
+							
+				for (t = 0; t<TORNADO; ++t){
+					new Float:b_o[3], Float:b_e[3]	
+					new e_arrow = create_entity("info_target")
+					engfunc(EngFunc_SetModel, e_arrow, g_Resource[11])
+					set_pev(e_arrow, pev_classname, "scorpion_arrow")
+				
+					origin_tornado[t][2] = origin[2]
+					
+					new Float:vector[3]
+					xs_vec_sub(origin_tornado[t], origin, vector)
+					xs_vec_normalize(vector, vector)
+					xs_vec_mul_scalar(vector, 1500.0, vector)
+					
+					/* vector create */
+					b_o[0] = origin_tornado[t][0]
+					b_o[1] = origin_tornado[t][1]
+					b_o[2] = origin_tornado[t][2] + 200.0
+					b_e[0] = b_o[0]
+					b_e[1] = b_o[1]
+					b_e[2] = b_o[2] - 600.0
+					
+					new tr_arrow
+					engfunc(EngFunc_TraceLine, b_o, b_e, IGNORE_MONSTERS, e_arrow, tr_arrow)
+					get_tr2(tr_arrow, TR_vecEndPos, b_e)
+					b_e[2] += 1.0
+					engfunc(EngFunc_SetOrigin, e_arrow, b_e)
+					set_pev(e_arrow, pev_scale, 0.3)
+						
+					/* angle */
+					new Float:a_angle[3]
+					vector_to_angle(vector, a_angle)
+					a_angle[0] = 90.0
+					a_angle[1] += 90.0
+					a_angle[2] = 0.0
+					set_pev(e_arrow, pev_angles, a_angle)
+					/* end remake */
+				}
+						
 				set_pev(hole, pev_effects, EF_NODRAW)
 				set_pev(hole, pev_nextthink, get_gametime() + 3.0)
 				n = 0
@@ -869,38 +1188,8 @@ public think_hole( hole ) {
 			}
 			set_pev(hole, pev_nextthink, get_gametime() + 0.1)
 		}
-		case 1: {
-			new t, Float:origin[3], Float:origin_tornado[TORNADO][3]
-			pev(hole, pev_origin, origin)
-			
-			origin_tornado[0][0] = origin[0] + TORNADO_OFFSET
-			origin_tornado[0][1] = origin[1]
-			
-			origin_tornado[1][0] = origin[0] 
-			origin_tornado[1][1] = origin[1] + TORNADO_OFFSET
-			
-			origin_tornado[2][0] = origin[0] + TORNADO_OFFSET
-			origin_tornado[2][1] = origin[1] - TORNADO_OFFSET
-			
-			origin_tornado[3][0] = origin[0] - TORNADO_OFFSET
-			origin_tornado[3][1] = origin[1] + TORNADO_OFFSET
-			
-			origin_tornado[4][0] = origin[0] + TORNADO_OFFSET
-			origin_tornado[4][1] = origin[1] + TORNADO_OFFSET
-			
-			origin_tornado[5][0] = origin[0] - TORNADO_OFFSET
-			origin_tornado[5][1] = origin[1] - TORNADO_OFFSET
-			
-			origin_tornado[6][0] = origin[0] - TORNADO_OFFSET
-			origin_tornado[6][1] = origin[1]
-			
-			origin_tornado[7][0] = origin[0] 
-			origin_tornado[7][1] = origin[1] - TORNADO_OFFSET			
-		
-			
-			for (t = 0; t<TORNADO; ++t){
-				origin_tornado[t][2] = origin[2]
-				
+		case 1: {		
+			for (t = 0; t<TORNADO; ++t){				
 				new Float:vector[3]
 				xs_vec_sub(origin_tornado[t], origin, vector)
 				xs_vec_normalize(vector, vector)
@@ -914,7 +1203,7 @@ public think_hole( hole ) {
 				set_pev(tornado, pev_velocity, vector)
 				set_pev(tornado, pev_classname, "scorpion_tornado")
 				set_pev(tornado, pev_nextthink, get_gametime() + 0.1)
-				zl_anim(tornado, 0, 1.0)				
+				zl_anim(tornado, 0, 1.0)
 			}
 			zl_sound(0, g_SoundList[20], 0)
 			engfunc(EngFunc_RemoveEntity, hole)
@@ -932,7 +1221,7 @@ public think_tornado( t ) {
 		if(!is_user_alive(i))
 			continue
 		
-		if (entity_range(i, t) < 260) {
+		if (entity_range(i, t) < 240) {
 			set_pev(i, pev_velocity, {0.0, 0.0, 900.0}) // Fucking nigga
 		}
 	}
@@ -942,6 +1231,10 @@ public think_tornado( t ) {
 		static e
 		while ( (e = engfunc(EngFunc_FindEntityByString, e, "classname", "scorpion_tornado")) )
 			if(pev_valid(e)) engfunc(EngFunc_RemoveEntity, e)
+			
+		static s = -1
+		while ( (s = engfunc(EngFunc_FindEntityByString, s, "classname", "scorpion_arrow")) )
+			if(pev_valid(s)) set_pev(s, pev_flags, pev(s, pev_flags) | FL_KILLME)
 		return
 	}
 	
@@ -1029,22 +1322,46 @@ public think_healthbar( e ) {
 		return
 	
 	switch(100 - floatround(percent)) {
-		case 81..90: {
+		case 91..98: {
+			if (g_Phase != -1) {
+				g_Phase = -1
+				g_Ability = X_TORNADO
+			}
+		}
+		case 85..90: {
 			if (g_Phase != 1) {
 				g_Phase = 1
 				g_Ability = TENTACLE2
 			}
 		}
-		case 71..80: {
+		case 81..84: {
+			if (g_Phase != -2) {
+				g_Phase = -2
+				g_Ability = X_TORNADO
+			}
+		}
+		case 76..80: {
 			if (g_Phase != 2) {
 				g_Phase = 2
 				g_Ability = DOWN0
 			}
 		}
-		case 61..70: {
+		case 71..75: {
+			if (g_Phase != -3) {
+				g_Phase = -3
+				g_Ability = X_TORNADO
+			}
+		}
+		case 66..70: {
 			if (g_Phase != 3) {
 				g_Phase = 3
 				g_Ability = TENTACLE2
+			}
+		}
+		case 61..65: {
+			if (g_Phase != -3) {
+				g_Phase = -3
+				g_Ability = X_TORNADO
 			}
 		}
 		case 51..60: {
@@ -1084,6 +1401,387 @@ public think_healthbar( e ) {
 			}
 		}
 	}
+}
+
+/* TORNADO X */
+public think_base_damage( t ) {
+	new i, victim
+	static j, n, g
+	n++
+	g++
+	
+	victim = pev(t, pev_victim)
+	
+	if (g >= zl_cvar[5] * 10) {
+		if(g_Ability == RUN) {
+			boss_raketa()
+			g = 0
+		}
+	}
+	
+	if (n >= zl_cvar[6] * 10) {			
+		new Float:o[3]
+		victim = zl_player_choose(t, ZL_CHOOSE_RANDOM)
+		set_pev(t, pev_victim, victim)
+		
+		
+		new Float:end_origin[3]
+		pev(victim, pev_origin, o)
+					
+		/* vector create */
+		o[2] += 300.0
+		end_origin[0] = o[0]
+		end_origin[1] = o[1]
+		end_origin[2] = o[2] - 600.0
+									
+		new tr
+		engfunc(EngFunc_TraceLine, o, end_origin, IGNORE_MONSTERS, -1, tr)
+		get_tr2(tr, TR_vecEndPos, o)
+		o[2] += 1.0
+		/* end vector create */
+		
+		engfunc(EngFunc_SetOrigin, t, o)
+		n = 0
+	}
+	
+	for (i = 1; i <= g_MaxPlayer; ++i) {
+		if (!is_user_alive(i))
+			continue
+			
+		if (entity_range(t, i) > 240) {
+			set_rendering(i)
+			g_p_d_tornado[i] = 0
+		} else {
+			zl_screenfade(i, 1, 1, {0, 255, 255}, 20, 1)
+			set_rendering(i, kRenderFxGlowShell, 0, 255, 255, kRenderNormal, 80)
+			g_p_d_tornado[i] = 1
+		}
+	}
+	
+	// Life
+	j++
+	if (j > zl_cvar[7]*10) {		
+		new i_t
+		for (i_t = 1; i_t <= g_MaxPlayer; ++i_t) {
+			if(g_p_d_tornado[i_t]) {
+				set_rendering(i_t)
+				g_p_d_tornado[i_t] = 0
+			}
+		}
+		
+		set_pev(t, pev_victim, 0)
+		engfunc(EngFunc_RemoveEntity, t)
+		j = 0
+		return
+		
+	}
+	set_pev(t, pev_nextthink, get_gametime() + 0.1)
+}
+
+public boss_raketa() {
+	new Float:origin[3], Float:end_origin[3]
+
+	if (g_Phase < 5) {
+		new i, s, player[33], victim
+		for (i = 1; i <= g_MaxPlayer; ++i) {
+			if(!is_user_alive(i))
+				continue
+				
+			if(entity_range(i, g_Scorpion) < 400)
+				continue
+				
+			player[s] = i
+			s++
+		}
+		if (!s) return
+	
+		victim = player[random(s)]
+		pev(victim, pev_origin, end_origin)
+	}
+		
+	if (!pev_valid(g_Scorpion))
+		return
+		
+	new inter = 0
+	
+	zl_position(g_Scorpion, 0.0, 50.0, 150.0, origin)
+	
+	(g_Phase < 5) ? (inter = 0) : (inter = 10)
+	
+	if (inter > 0) {
+		static Float:angle[3], Float:a[3], Float:b[3], Float:v[3], Float:back[3]
+		static victim, plus
+		
+		if (!victim) {
+			victim = zl_player_choose(g_Scorpion, ZL_CHOOSE_MAX)
+			pev(victim, pev_origin, a)
+			pev(g_Scorpion, pev_origin, b)
+			
+			xs_vec_sub(a,b,v)
+			vector_to_angle(v, angle)
+			angle_vector(angle, ANGLEVECTOR_RIGHT, angle)
+		
+			back[0] = a[0]
+			back[1] = a[1]
+			back[2] = a[2]
+		
+			#define CF	70.0
+		
+		}
+	
+		if(plus==5) {
+			a[0] = back[0]
+			a[1] = back[1] 
+			a[2] = back[2]
+		}
+	
+		(plus < 5) ? (end_origin[0] = a[0] = a[0] - angle[0] * CF) : (end_origin[0] = a[0] = a[0] + angle[0] * CF)
+	
+		end_origin[1] = a[1] = a[1] + angle[1] * 20.0
+		end_origin[2] = a[2] = a[2] + angle[2]
+		
+		plus++
+		if (plus > 10) {
+			victim = 0
+			plus = 0
+			return
+		}
+		set_task(0.2, "boss_raketa")
+	}
+		
+	new Float:vector[3]
+	xs_vec_sub(end_origin, origin, vector)
+	
+	new Float:len
+	len = xs_vec_len(vector)
+	
+	xs_vec_normalize(vector, vector)	
+	xs_vec_mul_scalar(vector, 1500.0, vector)
+	
+	new Float:angle[3]
+	vector[2] -= 35.0
+	vector_to_angle(vector, angle)
+	
+	vector[2] = len / 7.0
+	
+	/* create raketa */
+	new r = create_entity("info_target")
+	engfunc(EngFunc_SetModel, r, g_Resource[15])
+	engfunc(EngFunc_SetSize, r, {-1.0, -1.0, -1.0}, {1.0, 1.0, 1.0})
+	engfunc(EngFunc_SetOrigin, r, origin)
+	set_pev(r, pev_movetype, MOVETYPE_STEP)
+	set_pev(r, pev_solid, SOLID_TRIGGER)
+	set_pev(r, pev_classname, "sz_missile")
+	zl_beamfollow(r, 1, 2, {255, 255, 255})
+	
+	set_pev(r, pev_angles, angle)
+	set_pev(r, pev_velocity, vector)
+	zl_sound(r, g_SoundList[23], 1)
+}
+
+public touch_missile(e, w) {		
+	new Float:origin[3]
+	pev(e, pev_origin, origin)
+	
+	
+	if (pev_valid(w)) {
+		new sz_name[32]
+		pev(w, pev_classname, sz_name, charsmax(sz_name))
+		if (sz_name[0] == 'b' && sz_name[5] == 's' && sz_name[9] == 'p') {
+			/*
+			new Float:v[3]
+			pev(e, pev_velocity, v)
+			set_pev(e, pev_velocity, v)
+			client_print(0, print_chat, "%f, %f, %f", v[0], v[1], v[2])
+			*/
+			return
+		}
+	}
+	
+	
+	zl_sound(e, g_SoundList[22], 1)
+	engfunc(EngFunc_MessageBegin, MSG_PVS, SVC_TEMPENTITY, origin, 0)
+	write_byte(TE_SPRITE)
+	engfunc(EngFunc_WriteCoord, origin[0]) // x
+	engfunc(EngFunc_WriteCoord, origin[1]) // y
+	engfunc(EngFunc_WriteCoord, origin[2] + 115.0) // z
+	write_short(i_Resource[16]) // sprite index
+	write_byte(25) // scale in 0.1's
+	write_byte(200) // brightness
+	message_end()
+
+	new Float:ret[3]
+	angle_vector(origin, ANGLEVECTOR_FORWARD, ret)
+	
+	new Float:v[3]
+	pev(e, pev_velocity, v)
+	v[0] /= 5.0
+	v[1] /= 5.0
+	v[2] = 100.0
+ 	zl_wreck(origin, Float:{-200.0, -200.0, -200.0}, v, 10, 30, 1, (0x02), i_Resource[17])
+	
+	message_begin(MSG_BROADCAST, SVC_TEMPENTITY)
+	write_byte(TE_WORLDDECAL)
+	engfunc(EngFunc_WriteCoord, origin[0])  
+	engfunc(EngFunc_WriteCoord, origin[1])  
+	engfunc(EngFunc_WriteCoord, origin[2])  
+	write_byte(random_num(46, 48))
+	message_end()
+	
+	new p
+	for(p = 1; p <= g_MaxPlayer; ++p) {
+		if(!is_user_alive(p))
+			continue
+			
+		if(entity_range(e, p) < 240) {
+			if (g_Phase > 5) {
+				if(g_Ability == X_STORM) {
+					static Float:hp
+					pev(p, pev_health, hp)
+					if (hp - 10 <= 0)
+						ExecuteHamB(Ham_Killed, p, p, 2)
+					else 
+						set_pev(p, pev_health, hp - float(zl_cvar[10]))
+				} else {
+					static Float:hp
+					pev(p, pev_health, hp)
+					if (hp - 10 <= 0)
+						ExecuteHamB(Ham_Killed, p, p, 2)
+					else 
+						set_pev(p, pev_health, hp - float(zl_cvar[11]))
+				}
+			} else {
+				if (g_p_d_tornado[p])
+					ExecuteHamB(Ham_Killed, p, p, 2)
+				else
+					zl_damage(p, pev(p, pev_health) / 2, 0)
+			}
+		}
+	}
+	
+	engfunc(EngFunc_RemoveEntity, e)
+}
+
+public think_tornado_killed( t ) {
+	static victim, n
+	victim = pev(t, pev_victim)
+	
+	n++
+	if (!is_user_alive(victim) || n > 20*10) {
+		message_begin( MSG_BROADCAST, SVC_TEMPENTITY )
+		write_byte( TE_KILLBEAM ) 
+		write_short( t )
+		message_end()
+				
+		set_rendering(victim)
+				
+		victim = zl_player_choose(t, ZL_CHOOSE_MIN)
+		set_pev(t, pev_victim, victim)
+		
+		set_rendering(victim, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 80)
+		zl_laser(t, victim, {255, 0, 0}, 255, 0)
+		n = 0
+	}
+	
+	new p
+	for (p = 1; p <= g_MaxPlayer; ++p) {
+		if (!is_user_alive(p))
+			continue
+			
+		if (entity_range(t, p) > 50)
+			continue
+			
+		ExecuteHamB(Ham_Killed, p, p, 2)
+	}
+	
+	new Float:v[3], Float:a[3]
+	zl_move(t, victim, float(zl_cvar[8]), v, a)
+	set_pev(t, pev_velocity, v)
+	set_pev(t, pev_angles, a)
+	
+	set_pev(t, pev_nextthink, get_gametime() + 0.1)
+	
+	if (g_Ability > 5) engfunc(EngFunc_RemoveEntity, t)
+}
+
+public think_tornado_bomb( t ) {
+	new victim 
+	victim = pev(t, pev_victim)
+	if (victim > 0 && !is_user_alive(victim)) {
+		victim = zl_player_choose(t, ZL_CHOOSE_RANDOM)
+		set_rendering(victim, kRenderFxGlowShell, 255, 255, 0, kRenderNormal, 80)
+	}
+	
+	if (victim > 0) {
+		new Float:v[3]
+		zl_move(t, victim, float(zl_cvar[9]), v)
+		set_pev(t, pev_velocity, v)
+	} else {
+		
+	}
+	
+	set_pev(t, pev_nextthink, get_gametime() + 0.1)
+	
+	new p
+	for (p = 1; p <= g_MaxPlayer; ++p) {
+		if(!is_user_alive(p))
+			continue
+			
+		if (entity_range(t, p) > 50)
+			continue
+		
+		new k, Float:s[4][3], Float:b_o[3]
+		pev(p, pev_origin, b_o)
+		
+		if (victim > 0) {
+			message_begin( MSG_BROADCAST, SVC_TEMPENTITY )
+			write_byte( TE_KILLBEAM ) 
+			write_short( t )
+			message_end()
+		
+			set_rendering(victim)
+			victim = 0
+		}
+		
+		engfunc(EngFunc_RemoveEntity, t)
+		
+		s[0][0] = b_o[0] + 500.0;s[0][1] = b_o[1]; s[0][2] = b_o[2]
+		s[1][0] = b_o[0] - 500.0; s[1][1] = b_o[1]; s[1][2] = b_o[2]
+		s[2][0] = b_o[0]; s[2][1] = b_o[1] + 500.0; s[2][2] = b_o[2]
+		s[3][0] = b_o[0]; s[3][1] = b_o[1] - 500.0; s[3][2] = b_o[2]
+		set_pev(p, pev_velocity, {0.0, 0.0, 900.0})
+		
+		for(k = 0; k < 4; ++k) {
+			new h = create_entity("info_target")
+			engfunc(EngFunc_SetOrigin, h, b_o)
+			engfunc(EngFunc_SetModel, h, g_Resource[14])
+			engfunc(EngFunc_SetSize, h, {-20.0, -20.0, -1.0}, {20.0, 20.0, 1.0})
+			set_pev(h, pev_solid, SOLID_TRIGGER)
+			set_pev(h, pev_movetype, MOVETYPE_FLY)
+			set_pev(h, pev_classname, "tornado_bomb")
+			set_pev(h, pev_nextthink, get_gametime() + 0.1)
+			
+			new Float:vector[3]
+			xs_vec_sub(s[k], b_o, vector)
+			xs_vec_normalize(vector, vector)
+			xs_vec_mul_scalar(vector, 200.0, vector)
+			set_pev(h, pev_velocity, vector)
+			zl_anim(h, 1, 0.5)
+			
+		}
+		break;
+		
+	}
+}
+
+public touch_tbomb(t, w) {
+	if(is_user_alive(w))
+		return
+		
+	if(pev_valid(w))
+		return
+		
+	engfunc(EngFunc_RemoveEntity, t)
 }
 
 public zl_timer(timer, prepare) {
@@ -1131,6 +1829,48 @@ public zl_timer(timer, prepare) {
 		set_pev(g_Scorpion, pev_nextthink, get_gametime() + 12.0)
 		set_pev(hp, pev_nextthink, get_gametime() + 0.1)
 		boss_spawn = !boss_spawn
+	}
+	if (g_Phase >= 5) {
+		static tmr
+		if (tmr >= zl_cvar[12] ) {
+			static zombie_num, num
+			switch(num) {
+				case 0:	{
+					if(zl_cvar[14] > 10)	
+						zl_cvar[14] = 10
+					
+					if(zl_cvar[13] > zl_cvar[14])
+						zombie_num = zl_cvar[14]
+					else
+						zombie_num += zl_cvar[13]
+				}
+				case 1: {
+					dllfunc(DLLFunc_Use, e_door[0], e_door[0])
+					dllfunc(DLLFunc_Use, e_door[1], e_door[1])
+				}
+				case 5: {
+					new i
+					for(i = 0; i < zombie_num; ++i) {
+						new Float:origin[3]
+						pev(e_zombie[i], pev_origin, origin)
+						origin[2] += 20.0
+						zl_zombie_create(origin, zl_cvar[15], zl_cvar[16], zl_cvar[17])
+					}
+					
+				}
+				case 7: {
+					dllfunc(DLLFunc_Use, e_door[0], e_door[0])
+					dllfunc(DLLFunc_Use, e_door[1], e_door[1])
+					(zombie_num < zl_cvar[14]) ? (zombie_num++) : (zombie_num = zl_cvar[14])
+					num = 1
+					tmr = 0
+					return
+				}
+			}
+			num++
+			return
+		}
+		tmr++
 	}
 }
 
@@ -1187,6 +1927,38 @@ public plugin_cfg() {
 				else if (equal(key, "BOSS_DAMAGE_TENTACLE"))
 					zl_cvar[4] = str_to_num(value)
 			}
+			case 2: { // Ability
+				if (equal(key, "BOSS_SPAWN_DMG"))
+					zl_fcvar[2] = str_to_float(value)
+				else if (equal(key, "BOSS_DMG_RAKETA"))
+					zl_cvar[5] = str_to_num(value)
+				else if (equal(key, "BOSS_DMG_RESPAWN"))
+					zl_cvar[6] = str_to_num(value)
+				else if (equal(key, "BOSS_DMG_LIFE"))
+					zl_cvar[7] = str_to_num(value)
+				else if (equal(key, "BOSS_SPAWN_S_KILL"))
+					zl_cvar[8] = str_to_num(value)
+				else if (equal(key, "BOSS_SPANW_S_VIRUS"))
+					zl_cvar[9] = str_to_num(value)
+				else if (equal(key, "BOSS_STORM_DMG"))
+					zl_cvar[10] = str_to_num(value)
+				else if (equal(key, "BOSS_RAKETA_DMG"))
+					zl_cvar[11] = str_to_num(value)
+			}
+			case 3: { // Zombie
+				if (equal(key, "ZOMBIE_SPAWN_TIMER"))
+					zl_cvar[12] = str_to_num(value)
+				else if (equal(key, "ZOMBIE_NUM"))
+					zl_cvar[13] = str_to_num(value)
+				else if (equal(key, "ZOMBIE_NUM_MAX"))
+					zl_cvar[14] = str_to_num(value)
+				else if (equal(key, "ZOMBIE_HP"))
+					zl_cvar[15] = str_to_num(value)
+				else if (equal(key, "ZOMBIE_SPEED"))
+					zl_cvar[16] = str_to_num(value)
+				else if (equal(key, "ZOMBIE_DMG"))
+					zl_cvar[17] = str_to_num(value)
+			}
 		}
 	}
 	if (file) fclose(file)
@@ -1208,7 +1980,14 @@ map_load() {
 		e_down[i] = engfunc(EngFunc_FindEntityByString, e_down[i], "targetname", szStrin)
 	}
 	
+	for (i = 0; i <= 10; ++i) {
+		format(szStrin, charsmax(szStrin), "zombie%d", i)
+		e_zombie[i] = engfunc(EngFunc_FindEntityByString, e_zombie[i], "targetname", szStrin)
+	}
+		
 	g_Scorpion = engfunc(EngFunc_FindEntityByString, g_Scorpion, "targetname", "boss_spawn")
+	e_door[0] = engfunc(EngFunc_FindEntityByString, e_door[0], "targetname", "d1")
+	e_door[1] = engfunc(EngFunc_FindEntityByString, e_door[1], "targetname", "d2")
 }
 
 public plugin_precache() {
@@ -1241,6 +2020,19 @@ stock zl_laser(a, b, Color[3], timer, noise) {
 	write_byte( 0 )		// speed 
 	message_end()
 }
-/* AMXX-Studio Notes - DO NOT MODIFY BELOW HERE
-*{\\ rtf1\\ ansi\\ deff0{\\ fonttbl{\\ f0\\ fnil Tahoma;}}\n\\ viewkind4\\ uc1\\ pard\\ lang1049\\ f0\\ fs16 \n\\ par }
-*/
+
+stock zl_beamfollow(id, Life, Size, Color[3]) {
+	if (is_user_alive(id) || pev_valid(id)) {
+		message_begin(MSG_BROADCAST, SVC_TEMPENTITY)	// TE_BEAMFOLLOW ( msg #22) create a line of decaying beam segments until entity stops moving
+		write_byte(TE_BEAMFOLLOW)	// msg id
+		write_short(id)			// short (entity:attachment to follow)
+		write_short(i_Resource[6])	// short (sprite index)
+		write_byte(Life * 10)		// byte (life in 0.1's)
+		write_byte(Size)              	// byte (line width in 0.1's)
+		write_byte(Color[0])		// byte (color)
+		write_byte(Color[1])		// byte (color)
+		write_byte(Color[2])		// byte (color)
+		write_byte(255)			// byte (brightness)
+		message_end()
+	}
+}

@@ -11,7 +11,7 @@
 #include < hamsandwich >
 #include < xs >
 
-#define VERSION			"1.0.1"
+#define VERSION			"2.0"
 
 #define pev_victim		pev_weaponanim
 #define pev_tornado		pev_iuser2		
@@ -25,6 +25,7 @@ native zl_boss_valid( ent )
 native zl_player_random()
 native zl_player_alive()
 native zl_colorchat(id, const msg[], any:...)
+native zl_zombie_create(Float:Origin[3], Health, Speed, Damage)
 forward zl_timer(timer, prepare)
 
 stock zl_anim(ent, sequence, Float:speed) {		
@@ -129,7 +130,7 @@ stock zl_player_choose(boss, type) {
 			}
 		}
 	}
-	return (type == 2) ? player[random(num)] : v
+	return (type == 2) ? player[random(num ? num : 1)] : v
 }
 
 stock zl_move(Start, End, Float:speed = 250.0, Float:Velocity[] = {0.0, 0.0, 0.0}, Float:Angles[] = {0.0, 0.0, 0.0}) {
